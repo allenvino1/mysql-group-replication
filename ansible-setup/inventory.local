@@ -1,0 +1,23 @@
+# Local Lima inventory for MySQL Group Replication testing.
+#
+# TWO DIFFERENT IPs are needed per node — they serve different purposes:
+#
+#   ansible_host = 127.0.0.1  (always)
+#     Ansible SSHes from your Mac through Lima's port-forward (localPort in the yaml).
+#     The foo-network IPs (192.168.42.x) are NOT reachable from your Mac host.
+#
+#   gr_bind_ip = 192.168.42.x  (the foo-network IP of each VM)
+#     MySQL binds its Group Replication port (33061) to this IP so VMs reach each other.
+#     Get these by running inside each VM after startup:
+#       limactl shell rocky1 -- ip -4 addr | awk '/inet.*192\.168\.42/{print $2}' | cut -d/ -f1
+
+[mysql_primary]
+rocky1  node_id=1  ansible_host=127.0.0.1  ansible_port=50465  ansible_user=allenbaldovino  ansible_ssh_private_key_file=~/.lima/_config/user  gr_bind_ip=192.168.42.1
+
+[mysql_secondary]
+rocky2  node_id=2  ansible_host=127.0.0.1  ansible_port=50466  ansible_user=allenbaldovino  ansible_ssh_private_key_file=~/.lima/_config/user  gr_bind_ip=192.168.42.3
+rocky3  node_id=3  ansible_host=127.0.0.1  ansible_port=50467  ansible_user=allenbaldovino  ansible_ssh_private_key_file=~/.lima/_config/user  gr_bind_ip=192.168.42.4
+
+[databases:children]
+mysql_primary
+mysql_secondary

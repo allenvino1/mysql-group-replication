@@ -1,0 +1,55 @@
+# Runs on the PRIMARY node only (mysql_primary group).
+# Bootstraps the Group Replication cluster - must complete before secondaries join.
+
+# FIX: query for an ONLINE PRIMARY specifically.
+# When GR plugin is installed but not started, replication_group_members still
+# returns the local node with MEMBER_STATE='OFFLINE', so length==0 is always
+# False and the block would never run. Filtering for PRIMARY+ONLINE is correct.
+- name: Check if an ONLINE primary already exists in the group
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: >
+      SELECT MEMBER_STATE
+      FROM performance_schema.replication_group_members
+      WHERE MEMBER_ROLE = 'PRIMARY' AND MEMBER_STATE = 'ONLINE'
+      LIMIT 1;
+  register: gr_bootstrap_check
+  changed_when: false
+  failed_when: false
+
+- name: Bootstrap Group Replication on primary
+  block:
+    - name: Enable bootstrap mode
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        query: "SET GLOBAL group_replication_bootstrap_group=ON;"
+
+    - name: Start Group Replication
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        query: "START GROUP_REPLICATION;"
+
+    - name: Disable bootstrap mode
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        query: "SET GLOBAL group_replication_bootstrap_group=OFF;"
+  when: gr_bootstrap_check.query_result[0] | length == 0
+
+- name: Verify primary is ONLINE
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: >
+      SELECT MEMBER_STATE
+      FROM performance_schema.replication_group_members
+      WHERE MEMBER_ROLE = 'PRIMARY' AND MEMBER_STATE = 'ONLINE'
+      LIMIT 1;
+  register: gr_primary_verify
+  until: gr_primary_verify.query_result[0] | length > 0
+  retries: 20
+  delay: 5
+  changed_when: false

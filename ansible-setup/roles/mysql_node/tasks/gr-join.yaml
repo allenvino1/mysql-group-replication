@@ -1,0 +1,40 @@
+# Runs on SECONDARY nodes (mysql_secondary group), one at a time (serial: 1).
+# Primary must be bootstrapped and ONLINE before this runs.
+
+# FIX: use @@report_host instead of @@hostname.
+# MEMBER_HOST in replication_group_members is set from report_host in my.cnf
+# (which is gr_bind_ip). @@hostname is the OS hostname and won't match.
+- name: Check if this node is already ONLINE in the replication group
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: >
+      SELECT MEMBER_STATE
+      FROM performance_schema.replication_group_members
+      WHERE MEMBER_HOST = @@report_host AND MEMBER_STATE = 'ONLINE'
+      LIMIT 1;
+  register: gr_join_check
+  changed_when: false
+  failed_when: false
+
+- name: Join Group Replication
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: "START GROUP_REPLICATION;"
+  when: gr_join_check.query_result[0] | length == 0
+
+- name: Verify this node is ONLINE
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: >
+      SELECT MEMBER_STATE
+      FROM performance_schema.replication_group_members
+      WHERE MEMBER_HOST = @@report_host AND MEMBER_STATE = 'ONLINE'
+      LIMIT 1;
+  register: gr_join_verify
+  until: gr_join_verify.query_result[0] | length > 0
+  retries: 30
+  delay: 10
+  changed_when: false

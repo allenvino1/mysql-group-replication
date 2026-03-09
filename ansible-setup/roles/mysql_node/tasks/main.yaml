@@ -1,0 +1,112 @@
+- name: Install required packages
+  ansible.builtin.yum:
+    name:
+      - wget
+      - rsync
+      - policycoreutils-python-utils
+      - python3
+      - python3-pip
+      - firewalld
+    state: present
+  tags: install
+
+- name: Ensure firewalld is running and enabled
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+  tags: install
+
+- name: Download MySQL release RPM
+  ansible.builtin.get_url:
+    url: "{{ mysql_rpm_urls[ansible_distribution_major_version] }}"
+    dest: /root/mysql-community-release.rpm
+    headers:
+      User-Agent: "Wget/1.21.1"
+  tags: install
+
+# disable_gpg_check=true here is intentional: the release RPM is the bootstrap
+# package — it installs the correct signing keys to /etc/pki/rpm-gpg/.
+# We cannot verify it with a key that doesn't exist yet.
+- name: Install MySQL 8.0 community release RPM
+  ansible.builtin.yum:
+    name: /root/mysql-community-release.rpm
+    state: present
+    disable_gpg_check: true
+  tags: install
+
+
+- name: Check if MySQL module is already disabled
+  ansible.builtin.command: yum module list mysql --disabled
+  register: mysql_module_status
+  changed_when: false
+  failed_when: false
+  tags: install
+
+- name: Disable default MySQL module (only if not already disabled)
+  ansible.builtin.command: yum module disable -y mysql
+  when: "'mysql' not in mysql_module_status.stdout"
+  tags: install
+
+- name: Install MySQL server
+  ansible.builtin.yum:
+    name: mysql-community-server
+    state: present
+    disable_gpg_check: true
+  tags: install
+
+- name: Ensure mysqld is running and enabled
+  ansible.builtin.service:
+    name: mysqld
+    state: started
+    enabled: true
+  tags: install
+
+# --- Change root password (idempotent via marker file) ---
+
+- name: Get temporary MySQL root password from error log
+  ansible.builtin.shell: "grep 'temporary password' /var/log/mysqld.log | awk '{print $NF}' | tail -n1"
+  register: mysql_temp_pass
+  changed_when: false
+  tags: install
+
+- name: Check if MySQL root password has already been changed
+  ansible.builtin.stat:
+    path: /root/.mysql_root_password_set
+  register: mysql_password_changed
+  tags: install
+
+- name: Change MySQL root password using CLI
+  ansible.builtin.command: >
+    mysql --user=root --password={{ mysql_temp_pass.stdout }}
+    --connect-expired-password
+    --execute="ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password }}';"
+  when: not mysql_password_changed.stat.exists
+  register: change_root_password
+  no_log: true
+  tags: install
+
+- name: Create marker file so password change is skipped on re-runs
+  ansible.builtin.file:
+    path: /root/.mysql_root_password_set
+    state: touch
+    mode: '0600'
+  when: change_root_password.changed | default(false)
+  tags: install
+
+- name: Create /root/.my.cnf so root can connect without typing password
+  ansible.builtin.copy:
+    dest: /root/.my.cnf
+    content: |
+      [client]
+      user=root
+      password={{ mysql_root_password }}
+    owner: root
+    group: root
+    mode: '0600'
+  tags: install
+
+# --- Configure Group Replication ---
+
+- name: Include GR configuration tasks
+  ansible.builtin.import_tasks: gr-setup.yaml

@@ -1,6 +1,3 @@
-
-
-
 # Generate uuid for the cluster 
 uuidgen
 

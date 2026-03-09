@@ -1,0 +1,34 @@
+# Play 1: Install MySQL and configure Group Replication settings on ALL nodes.
+# This play must fully complete across all hosts before plays 2 & 3 run.
+- name: Install and configure MySQL on all nodes
+  hosts: databases
+  become: true
+  gather_facts: true
+  roles:
+    - mysql_node
+
+# Play 2: Bootstrap the PRIMARY node.
+# Sets bootstrap=ON, starts GR, sets bootstrap=OFF, then waits until ONLINE.
+- name: Bootstrap Group Replication on primary
+  hosts: mysql_primary
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Bootstrap primary node
+      include_role:
+        name: mysql_node
+        tasks_from: gr-boostrap   # note: filename keeps original spelling
+
+# Play 3: Join SECONDARY nodes one at a time.
+# serial: 1 ensures each node fully joins before the next one starts,
+# which avoids overloading the recovery channel.
+- name: Join secondary nodes to the replication group
+  hosts: mysql_secondary
+  become: true
+  gather_facts: true
+  serial: 1
+  tasks:
+    - name: Join secondary node
+      include_role:
+        name: mysql_node
+        tasks_from: gr-join

@@ -1,0 +1,8 @@
+mysql_root_password: "Secur3R00tP@ssw0rd!"
+mysql_repl_pass: "Repl123!@"
+mysql_uuid: "410b8e67-625c-4f4e-bd11-7b3ea58fc071"
+
+# MySQL 8.0 community release RPM — picked automatically based on OS major version
+mysql_rpm_urls:
+  "8": "https://dev.mysql.com/get/mysql80-community-release-el8-9.noarch.rpm"
+  "9": "https://dev.mysql.com/get/mysql80-community-release-el9-1.noarch.rpm"

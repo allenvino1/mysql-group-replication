@@ -1,0 +1,179 @@
+- name: Register this node's GR bind IP
+  ansible.builtin.set_fact:
+    gr_local_ip: "{{ gr_bind_ip | default(ansible_default_ipv4.address) }}"
+  tags: gr_setup
+
+- name: Show GR bind IP
+  ansible.builtin.debug:
+    msg: "GR bind IP for {{ inventory_hostname }}: {{ gr_local_ip }}"
+  tags: gr_setup
+
+- name: Create /var/log/mysql directory
+  ansible.builtin.file:
+    path: /var/log/mysql
+    state: directory
+    owner: mysql
+    group: mysql
+    mode: '0755'
+  tags: gr_setup
+
+# FIX: stat first, then backup only if the file exists
+- name: Check if /etc/my.cnf exists
+  ansible.builtin.stat:
+    path: /etc/my.cnf
+  register: mycnf_stat
+  tags: gr_setup
+
+- name: Backup existing my.cnf
+  ansible.builtin.copy:
+    src: /etc/my.cnf
+    dest: /etc/my.cnf.bak
+    remote_src: true
+    force: true
+  when: mycnf_stat.stat.exists
+  tags: gr_setup
+
+- name: Deploy my.cnf from template
+  ansible.builtin.template:
+    src: my.cnf.j2
+    dest: /etc/my.cnf
+    owner: root
+    group: root
+    mode: '0644'
+  tags: gr_setup
+
+- name: Install PyMySQL (required by community.mysql Ansible modules)
+  ansible.builtin.yum:
+    name: python3-PyMySQL
+    state: present
+  tags: gr_setup
+
+- name: Restart mysqld to apply new configuration
+  ansible.builtin.service:
+    name: mysqld
+    state: restarted
+  tags: gr_setup
+
+# --- Firewall ---
+# firewalld is installed and started in main.yaml before this runs
+
+- name: Allow port 3306 through firewalld (MySQL — needed for GR recovery channel)
+  ansible.builtin.command: firewall-cmd --permanent --add-port=3306/tcp
+  register: fw_mysql_port
+  changed_when: "'success' in fw_mysql_port.stdout"
+  failed_when: fw_mysql_port.rc != 0 and 'ALREADY_ENABLED' not in fw_mysql_port.stderr
+  tags: gr_setup
+
+- name: Allow port 33061 through firewalld (GR inter-node communication)
+  ansible.builtin.command: firewall-cmd --permanent --add-port=33061/tcp
+  register: fw_gr_port
+  changed_when: "'success' in fw_gr_port.stdout"
+  failed_when: fw_gr_port.rc != 0 and 'ALREADY_ENABLED' not in fw_gr_port.stderr
+  tags: gr_setup
+
+- name: Reload firewalld
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: true
+  tags: gr_setup
+
+# --- SELinux ---
+# FIX: check enforcement mode first — semanage fails differently when SELinux is disabled
+
+- name: Check SELinux enforcement mode
+  ansible.builtin.command: getenforce
+  register: selinux_mode
+  changed_when: false
+  failed_when: false
+  tags: gr_setup
+
+- name: Allow SELinux to permit mysqld on port 33061
+  ansible.builtin.command: semanage port -a -t mysqld_port_t -p tcp 33061
+  register: semanage_result
+  changed_when: semanage_result.rc == 0
+  failed_when: semanage_result.rc != 0 and 'already defined' not in semanage_result.stderr
+  when: selinux_mode.stdout | lower != 'disabled'
+  tags: gr_setup
+
+# --- Replication user ---
+
+- name: Ensure MySQL replication user exists
+  community.mysql.mysql_user:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    name: "repl"
+    password: "{{ mysql_repl_pass }}"
+    host: "%"
+    priv: "*.*:REPLICATION SLAVE,BACKUP_ADMIN"
+    state: present
+    check_implicit_admin: true
+  tags: gr_setup
+
+# --- GR plugin ---
+
+- name: Check if group_replication plugin is already installed
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: "SELECT PLUGIN_NAME FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME='group_replication';"
+  register: replication_plugin_check
+  changed_when: false
+  check_mode: false
+  tags: gr_setup
+
+- name: Install group_replication plugin if not present
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: "INSTALL PLUGIN group_replication SONAME 'group_replication.so';"
+  when: replication_plugin_check.query_result[0] | length == 0
+  tags: gr_setup
+
+# --- Recovery channel credentials ---
+# FIX: skip if GR is already ONLINE — CHANGE REPLICATION SOURCE fails on an active channel
+
+- name: Check if Group Replication is already running on this node
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: >
+      SELECT MEMBER_STATE
+      FROM performance_schema.replication_group_members
+      WHERE MEMBER_HOST = @@report_host AND MEMBER_STATE = 'ONLINE'
+      LIMIT 1;
+  register: gr_running_check
+  changed_when: false
+  failed_when: false
+  tags: gr_setup
+
+- name: Set Group Replication recovery channel credentials
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: >
+      CHANGE REPLICATION SOURCE TO
+      SOURCE_USER='repl',
+      SOURCE_PASSWORD='{{ mysql_repl_pass }}'
+      FOR CHANNEL 'group_replication_recovery';
+  when: >
+    gr_running_check.query_result[0] | length == 0 or
+    gr_running_check.query_result[0][0]['MEMBER_STATE'] != 'ONLINE'
+  tags: gr_setup
+
+# FIX: clear per-node GTID history before GR starts.
+# Setup SQL (root password change, user creation, plugin install) generates local GTIDs.
+# GR rejects any joiner whose GTID_EXECUTED contains transactions not present in the group.
+# RESET MASTER clears binary logs and resets GTID_EXECUTED to empty (works on all MySQL 8.0).
+# Safe to run here: my.cnf has start_on_boot=OFF so GR never auto-started yet.
+- name: Reset binary logs to clear per-node GTID history before joining GR
+  community.mysql.mysql_query:
+    login_user: root
+    login_password: "{{ mysql_root_password }}"
+    query: "RESET MASTER;"
+  when: >
+    gr_running_check.query_result[0] | length == 0 or
+    gr_running_check.query_result[0][0]['MEMBER_STATE'] != 'ONLINE'
+  tags: gr_setup
+
+# Bootstrap and join are in separate task files, called from playbook.yaml:
+#   mysql_primary   → gr-boostrap.yaml
+#   mysql_secondary → gr-join.yaml

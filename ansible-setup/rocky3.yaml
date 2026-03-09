@@ -1,0 +1,16 @@
+# Lima VM config for mysql-node-3
+# Start with: limactl start --name=rocky3 ./rocky3.yaml --network=lima:foo
+images:
+- location: "https://dl.rockylinux.org/pub/rocky/9/images/aarch64/Rocky-9-GenericCloud.latest.aarch64.qcow2"
+  arch: "aarch64"
+
+cpus: 2
+memory: "2GiB"
+disk: "20GiB"
+
+ssh:
+  localPort: 50467
+
+containerd:
+  system: false
+  user: false

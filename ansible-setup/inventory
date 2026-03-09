@@ -1,0 +1,18 @@
+# GCP inventory — replace ansible_host values with your actual GCP internal IPs
+# after running `terraform apply` (see terraform/outputs.tf for the IPs).
+#
+# ansible_user is typically the OS login user on GCP (e.g. the one tied to your SSH key).
+# ansible_ssh_private_key_file should point to the private key registered with GCP metadata.
+
+[mysql_primary]
+mysql-node-1  node_id=1  ansible_host=10.0.0.2  ansible_user=ansible  ansible_ssh_private_key_file=~/.ssh/gcp_mysql_key
+
+[mysql_secondary]
+mysql-node-2  node_id=2  ansible_host=10.0.0.3  ansible_user=ansible  ansible_ssh_private_key_file=~/.ssh/gcp_mysql_key
+mysql-node-3  node_id=3  ansible_host=10.0.0.4  ansible_user=ansible  ansible_ssh_private_key_file=~/.ssh/gcp_mysql_key
+
+# 'databases' is the union group used by Play 1 and by the my.cnf.j2 template
+# to build group_replication_group_seeds / ip_allowlist automatically.
+[databases:children]
+mysql_primary
+mysql_secondary

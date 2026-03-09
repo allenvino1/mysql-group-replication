@@ -1,0 +1,88 @@
+# ============================================================
+# LOCAL SETUP: MySQL Group Replication with Lima (3 nodes)
+# ============================================================
+
+# --- Python / Ansible setup (one-time) ----------------------
+python3 -m venv ~/venvs/ansible-env
+source ~/venvs/ansible-env/bin/activate
+pip install ansible
+
+# Install required Ansible collections from requirements.yml
+ansible-galaxy collection install -r requirements.yml
+
+
+# --- Lima network (one-time) --------------------------------
+# Create a shared network so all VMs can reach each other on port 33061
+limactl network create foo --gateway 192.168.42.1/24
+
+
+# --- Start the 3 VMs ----------------------------------------
+limactl start --name=rocky1 ./rocky1.yaml --network=lima:foo
+limactl start --name=rocky2 ./rocky2.yaml --network=lima:foo
+limactl start --name=rocky3 ./rocky3.yaml --network=lima:foo
+
+
+# Verify all three are running 
+
+limactl list
+
+# --- Discover Lima foo-network IPs --------------------------
+# Rocky Linux 9 on Lima's VZ backend uses predictable PCI names (enp0s1, enp0s2...)
+# not lima0. Grep by the foo-network CIDR (192.168.42.0/24) instead.
+limactl shell rocky1 -- ip -4 addr | awk '/inet.*192\.168\.42/{print $2}' | cut -d/ -f1
+limactl shell rocky2 -- ip -4 addr | awk '/inet.*192\.168\.42/{print $2}' | cut -d/ -f1
+limactl shell rocky3 -- ip -4 addr | awk '/inet.*192\.168\.42/{print $2}' | cut -d/ -f1
+
+# Update gr_bind_ip values in inventory.local with the IPs you got above.
+
+
+# --- Run the playbook (local Lima) --------------------------
+cd ansible-setup
+source ~/venvs/ansible-env/bin/activate
+
+ansible-playbook -i inventory.local playbook.yaml
+
+
+# --- Verify cluster after playbook completes ----------------
+# SSH into the primary and check member status:
+limactl shell rocky1 -- sudo mysql -e "SELECT MEMBER_HOST, MEMBER_ROLE, MEMBER_STATE FROM performance_schema.replication_group_members ORDER BY MEMBER_ROLE;"
+
+# --- Tear down VMs ------------------------------------------
+limactl stop rocky1 
+limactl stop rocky2 
+limactl stop rocky3
+
+limactl delete rocky1 rocky2 rocky3
+
+
+# ============================================================
+# GCP SETUP: MySQL Group Replication with Terraform + Ansible
+# ============================================================
+
+# --- Spin up GCP instances ----------------------------------
+cd terraform
+terraform init
+terraform apply \
+  -var="project_id=YOUR_PROJECT_ID" \
+  -var="ssh_public_key_path=~/.ssh/gcp_mysql_key.pub"
+
+# Generate the Ansible inventory from Terraform output
+terraform output -raw ansible_inventory > ../ansible-setup/inventory
+
+
+# --- Run the playbook (GCP) ---------------------------------
+cd ../ansible-setup
+source ~/venvs/ansible-env/bin/activate
+
+ansible-playbook -i inventory playbook.yaml
+
+
+# --- Useful diagnostics -------------------------------------
+# Check GR member status on any node:
+#   SELECT MEMBER_HOST, MEMBER_STATE, MEMBER_ROLE FROM performance_schema.replication_group_members;
+#
+# Check GR plugin is loaded:
+#   SELECT PLUGIN_NAME, PLUGIN_STATUS FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME='group_replication';
+#
+# Check replication channel:
+#   SHOW REPLICA STATUS FOR CHANNEL 'group_replication_recovery'\G
